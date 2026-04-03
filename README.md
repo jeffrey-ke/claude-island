@@ -1,54 +1,72 @@
-<div align="center">
-  <img src="ClaudeIsland/Assets.xcassets/AppIcon.appiconset/icon_128x128.png" alt="Logo" width="100" height="100">
-  <h3 align="center">Claude Island</h3>
-  <p align="center">
-    A macOS menu bar app that brings Dynamic Island-style notifications to Claude Code CLI sessions.
-    <br />
-    <br />
-    <a href="https://github.com/farouqaldori/claude-island/releases/latest" target="_blank" rel="noopener noreferrer">
-      <img src="https://img.shields.io/github/v/release/farouqaldori/claude-island?style=rounded&color=white&labelColor=000000&label=release" alt="Release Version" />
-    </a>
-    <a href="#" target="_blank" rel="noopener noreferrer">
-      <img alt="GitHub Downloads" src="https://img.shields.io/github/downloads/farouqaldori/claude-island/total?style=rounded&color=white&labelColor=000000">
-    </a>
-  </p>
-</div>
+# Claude Island (remote SSH fork)
 
-## Features
+A macOS notch overlay for monitoring Claude Code sessions — forked from [farouqaldori/claude-island](https://github.com/farouqaldori/claude-island) and being modified to work with remote sessions over SSH.
 
-- **Notch UI** — Animated overlay that expands from the MacBook notch
-- **Live Session Monitoring** — Track multiple Claude Code sessions in real-time
-- **Permission Approvals** — Approve or deny tool executions directly from the notch
-- **Chat History** — View full conversation history with markdown rendering
-- **Auto-Setup** — Hooks install automatically on first launch
+## What's different from upstream
+
+Upstream claude-island monitors local Claude Code sessions via a Unix domain socket. This fork adds remote session monitoring: it fetches session state from a Linux server over SSH and displays it alongside local sessions in the same notch UI.
+
+The goal is a full remote control for Claude Code — see working/blocked/idle states, approve permissions, and send prompts, all from the Mac notch without switching to a terminal.
 
 ## Requirements
 
 - macOS 15.6+
-- Claude Code CLI
+- Xcode with Swift 6
+- SSH key auth configured for the remote host (`~/.ssh/config`)
+- [ccmonitor](../) running on the remote server
 
-## Install
-
-Download the latest release or build from source:
+## Build
 
 ```bash
-xcodebuild -scheme ClaudeIsland -configuration Release build
+xcodebuild -scheme ClaudeIsland -configuration Debug build
 ```
 
-## How It Works
+Or open `ClaudeIsland.xcodeproj` in Xcode and Cmd+R.
 
-Claude Island installs hooks into `~/.claude/hooks/` that communicate session state via a Unix socket. The app listens for events and displays them in the notch overlay.
+## Current status
 
-When Claude needs permission to run a tool, the notch expands with approve/deny buttons—no need to switch to the terminal.
+**Stage 1: SSH Fetch + Parse** — code written, awaiting Mac build + test.
 
-## Analytics
+The app fetches `~/.claude/run/status` from the remote server via SSH, parses the fixed-width table into Swift structs, and logs the result. See `stage1-progress.md` for build and test instructions.
 
-Claude Island uses Mixpanel to collect anonymous usage data:
+## Roadmap
 
-- **App Launched** — App version, build number, macOS version
-- **Session Started** — When a new Claude Code session is detected
+| Stage | What it does | Status |
+|---|---|---|
+| 1 | SSH fetch + parse status file | Code written |
+| 2 | Remote sessions appear in notch UI | Planned |
+| 3 | Visual differentiation + settings UI | Planned |
+| 4 | Approve/deny remote permissions | Planned |
+| 5 | Richer detail via tmux pane captures | Planned |
+| 6 | Send prompts to remote sessions | Planned |
 
-No personal data or conversation content is collected.
+See `remote-ssh-stages.md` for details on each stage.
+
+## How it works
+
+### Local sessions (upstream behavior, unchanged)
+
+```
+Claude Code → hook fires → Python script → Unix socket → app displays in notch
+```
+
+### Remote sessions (new)
+
+```
+Remote: hooks → state files → claude_status.py → ~/.claude/run/status
+                                                        ↓
+Local:  ssh fetch → StatusParser → SessionStore → notch UI
+```
+
+The remote path runs parallel to the local path. Both feed into the same `SessionStore`, so local and remote sessions appear side by side.
+
+## Upstream features (preserved)
+
+- Animated notch overlay that expands from the MacBook notch
+- Live monitoring of multiple Claude Code sessions
+- Approve or deny tool executions from the notch
+- Full conversation history with markdown rendering
+- Auto-update via Sparkle
 
 ## License
 
