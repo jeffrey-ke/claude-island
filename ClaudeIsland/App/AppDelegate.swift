@@ -85,6 +85,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let updater = self?.updater, updater.canCheckForUpdates else { return }
             updater.checkForUpdates()
         }
+
+        // Stage 1 test: SSH fetch + parse (remove in Stage 2)
+        Task {
+            let result = await ProcessExecutor.shared.runWithResult(
+                "/usr/bin/ssh",
+                arguments: ["-o", "ConnectTimeout=5", "tesu", "cat", "~/.claude/run/status"]
+            )
+            switch result {
+            case .success(let r):
+                let sessions = StatusParser.parse(r.output)
+                print("[RemoteSSH] \(sessions.count) sessions:")
+                for s in sessions {
+                    print("  \(s.target) \(s.state) \(s.name) \(s.cwd)")
+                }
+            case .failure(let error):
+                print("[RemoteSSH] Failed: \(error)")
+            }
+        }
     }
 
     private func handleScreenChange() {
