@@ -19,18 +19,18 @@ struct StatusParser {
 
     private static func parseLine(_ line: String) -> RemoteSessionStatus? {
         // Format from claude_status.py write_status():
-        //   f"{target:<12} {s['state']:<8} {name:<25} {cwd}"
-        // Offsets: TARGET 0-11, STATE 13-20, NAME 22-46, CWD 48+
+        //   f"{target:<14} {s['state']:<8} {name:<25} {cwd}"
+        // Offsets: TARGET 0-13, STATE 15-22, NAME 24-48, CWD 50+
 
-        guard line.count >= 22 else { return nil }
+        guard line.count >= 24 else { return nil }
 
-        let target = sliceField(line, start: 0, end: 12)
-        let state = sliceField(line, start: 13, end: 21)
+        let target = sliceField(line, start: 0, end: 14)
+        let state = sliceField(line, start: 15, end: 23)
 
         guard !target.isEmpty, !state.isEmpty else { return nil }
 
-        let name = line.count >= 47 ? sliceField(line, start: 22, end: 47) : ""
-        let cwd = line.count >= 48 ? sliceField(line, start: 48, end: line.count) : ""
+        let name = line.count >= 49 ? sliceField(line, start: 24, end: 49) : ""
+        let cwd = line.count >= 50 ? sliceField(line, start: 50, end: line.count) : ""
 
         return RemoteSessionStatus(target: target, state: state, name: name, cwd: cwd)
     }

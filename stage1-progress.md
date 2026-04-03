@@ -1,10 +1,10 @@
 # Stage 1: SSH Fetch + Parse — Progress
 
-## Status: Code written, awaiting Mac build + test
+## Status: Complete and verified (2026-04-03)
 
 ## What was implemented
 
-Three changes, all on the Linux server:
+Three changes to claude-island:
 
 1. **`ClaudeIsland/Models/RemoteSessionStatus.swift`** (new)
    - Value type: target, state, name, cwd
@@ -13,7 +13,7 @@ Three changes, all on the Linux server:
 2. **`ClaudeIsland/Services/Remote/StatusParser.swift`** (new)
    - Pure function `StatusParser.parse(_ raw: String) -> [RemoteSessionStatus]`
    - Parses the fixed-width table written by `claude_status.py`
-   - Column offsets: TARGET 0-11, STATE 13-20, NAME 22-46, CWD 48+
+   - Column offsets: TARGET 0-13 (14 wide), STATE 15-22, NAME 24-48, CWD 50+
    - Handles header line, empty input, "(no sessions detected)"
 
 3. **`ClaudeIsland/App/AppDelegate.swift`** (modified)
@@ -23,48 +23,21 @@ Three changes, all on the Linux server:
    - Tagged with `[RemoteSSH]` for easy filtering
    - To be removed in Stage 2
 
-## Build directions (on Mac)
+## Column width fix (2026-04-03)
 
-```bash
-# 1. Pull the changes
-cd ~/repo/ccmonitor/claude-island
-git pull
+Initial implementation used `{target:<12}` in `claude_status.py`, which truncated targets
+longer than 12 chars (e.g. `ccmonitor:1.0` = 13 chars). Fixed by widening to `{target:<14}`
+in both `claude_status.py` (remote server) and the parser offsets in `StatusParser.swift`.
 
-# 2. Open in Xcode
-open ClaudeIsland.xcodeproj
+## Verified output (2026-04-03)
 
-# 3. Add new files to the project (they won't appear automatically):
-#    - Right-click Models group → Add Files → select RemoteSessionStatus.swift
-#    - Right-click Services group → New Group "Remote"
-#    - Right-click Remote group → Add Files → select StatusParser.swift
-#    - Ensure both have the ClaudeIsland target checked
-
-# 4. Build and run
-#    Cmd+R in Xcode, or:
-xcodebuild -scheme ClaudeIsland -configuration Debug build 2>&1 | tail -5
+```
+[RemoteSSH] 2 sessions:
+  eval:0.1 blocked omnigraph explainer po/visual_servoing/datagen2_isaacsim
+  ccmonitor:1.0 idle cks-documentation-archit ~/repo/ccmonitor/claude-island
 ```
 
-## Test verification
-
-Check Xcode console (or Console.app filtered to "RemoteSSH"):
-
-**Success looks like:**
-```
-[RemoteSSH] 3 sessions:
-  eval:2.0 working my-project ~/repo/project
-  ipl:1.0 idle another-session ~/other/dir
-  main:0.3 blocked unnamed ~/work
-```
-
-**Compare against:**
-```bash
-ssh tesu cat ~/.claude/run/status
-```
-
-**Error case:** Change host to `"nonexistent"` in AppDelegate, rebuild. Expect
-`[RemoteSSH] Failed: executionFailed(...)` within ~5 seconds.
-
-**Empty case:** If no sessions running on remote, expect `[RemoteSSH] 0 sessions:`.
+Matches `ssh tesu cat ~/.claude/run/status` ground truth.
 
 ## What's next (Stage 2)
 
