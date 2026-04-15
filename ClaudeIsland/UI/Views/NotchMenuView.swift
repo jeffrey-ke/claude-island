@@ -38,6 +38,7 @@ struct NotchMenuView: View {
             // Appearance settings
             ScreenPickerRow(screenSelector: screenSelector)
             SoundPickerRow(soundSelector: soundSelector)
+            RemoteHostPickerRow()
 
             Divider()
                 .background(Color.white.opacity(0.08))

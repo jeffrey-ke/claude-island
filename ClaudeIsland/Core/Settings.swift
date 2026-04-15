@@ -38,6 +38,8 @@ enum AppSettings {
 
     private enum Keys {
         static let notificationSound = "notificationSound"
+        static let remoteSSHHost = "remoteSSHHost"
+        static let remoteBridgeEnabled = "remoteBridgeEnabled"
     }
 
     // MARK: - Notification Sound
@@ -54,5 +56,19 @@ enum AppSettings {
         set {
             defaults.set(newValue.rawValue, forKey: Keys.notificationSound)
         }
+    }
+
+    // MARK: - Remote SSH Bridge
+
+    /// The SSH config host to connect to for remote session monitoring
+    static var remoteSSHHost: String {
+        get { defaults.string(forKey: Keys.remoteSSHHost) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.remoteSSHHost) }
+    }
+
+    /// Whether the remote SSH bridge is enabled
+    static var remoteBridgeEnabled: Bool {
+        get { defaults.bool(forKey: Keys.remoteBridgeEnabled) }
+        set { defaults.set(newValue, forKey: Keys.remoteBridgeEnabled) }
     }
 }

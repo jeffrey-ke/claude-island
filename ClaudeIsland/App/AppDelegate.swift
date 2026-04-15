@@ -86,22 +86,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             updater.checkForUpdates()
         }
 
-        // Stage 1 test: SSH fetch + parse (remove in Stage 2)
-        Task {
-            let result = await ProcessExecutor.shared.runWithResult(
-                "/usr/bin/ssh",
-                arguments: ["-o", "ConnectTimeout=5", "tesu", "cat", "~/.claude/run/status"]
-            )
-            switch result {
-            case .success(let r):
-                let sessions = StatusParser.parse(r.output)
-                print("[RemoteSSH] \(sessions.count) sessions:")
-                for s in sessions {
-                    print("  \(s.target) \(s.state) \(s.name) \(s.cwd)")
-                }
-            case .failure(let error):
-                print("[RemoteSSH] Failed: \(error)")
-            }
+        // Auto-connect SSH bridge if configured
+        if AppSettings.remoteBridgeEnabled, !AppSettings.remoteSSHHost.isEmpty {
+            SSHTunnelManager.shared.connect(host: AppSettings.remoteSSHHost)
         }
     }
 
@@ -110,6 +97,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SSHTunnelManager.shared.disconnect()
         Mixpanel.mainInstance().flush()
         updateCheckTimer?.invalidate()
         screenObserver = nil

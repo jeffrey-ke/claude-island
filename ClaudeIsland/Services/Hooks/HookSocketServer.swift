@@ -2,7 +2,7 @@
 //  HookSocketServer.swift
 //  ClaudeIsland
 //
-//  Unix domain socket server for real-time hook events
+//  Socket server for real-time hook events (Unix domain + TCP)
 //  Supports request/response for permission decisions
 //
 
@@ -25,6 +25,8 @@ struct HookEvent: Codable, Sendable {
     let toolUseId: String?
     let notificationType: String?
     let message: String?
+    /// Whether this event came from a remote session (via TCP bridge)
+    var isRemote: Bool
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -35,8 +37,7 @@ struct HookEvent: Codable, Sendable {
         case message
     }
 
-    /// Create a copy with updated toolUseId
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, isRemote: Bool = false) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -48,6 +49,23 @@ struct HookEvent: Codable, Sendable {
         self.toolUseId = toolUseId
         self.notificationType = notificationType
         self.message = message
+        self.isRemote = isRemote
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        event = try container.decode(String.self, forKey: .event)
+        status = try container.decode(String.self, forKey: .status)
+        pid = try container.decodeIfPresent(Int.self, forKey: .pid)
+        tty = try container.decodeIfPresent(String.self, forKey: .tty)
+        tool = try container.decodeIfPresent(String.self, forKey: .tool)
+        toolInput = try container.decodeIfPresent([String: AnyCodable].self, forKey: .toolInput)
+        toolUseId = try container.decodeIfPresent(String.self, forKey: .toolUseId)
+        notificationType = try container.decodeIfPresent(String.self, forKey: .notificationType)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        isRemote = false  // Set by server after decoding
     }
 
     var sessionPhase: SessionPhase {
@@ -103,14 +121,18 @@ typealias HookEventHandler = @Sendable (HookEvent) -> Void
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
 
-/// Unix domain socket server that receives events from Claude Code hooks
+/// Socket server that receives events from Claude Code hooks
+/// Listens on both a Unix domain socket (local) and TCP (remote via SSH tunnel)
 /// Uses GCD DispatchSource for non-blocking I/O
 class HookSocketServer {
     static let shared = HookSocketServer()
     static let socketPath = "/tmp/claude-island.sock"
+    static let tcpPort: UInt16 = 19876
 
     private var serverSocket: Int32 = -1
+    private var tcpSocket: Int32 = -1
     private var acceptSource: DispatchSourceRead?
+    private var tcpAcceptSource: DispatchSourceRead?
     private var eventHandler: HookEventHandler?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.claudeisland.socket", qos: .userInitiated)
@@ -127,10 +149,11 @@ class HookSocketServer {
 
     private init() {}
 
-    /// Start the socket server
+    /// Start both Unix and TCP socket servers
     func start(onEvent: @escaping HookEventHandler, onPermissionFailure: PermissionFailureHandler? = nil) {
         queue.async { [weak self] in
             self?.startServer(onEvent: onEvent, onPermissionFailure: onPermissionFailure)
+            self?.startTCPServer()
         }
     }
 
@@ -198,11 +221,80 @@ class HookSocketServer {
         acceptSource?.resume()
     }
 
+    private func startTCPServer() {
+        guard tcpSocket < 0 else { return }
+
+        tcpSocket = socket(AF_INET, SOCK_STREAM, 0)
+        guard tcpSocket >= 0 else {
+            logger.error("Failed to create TCP socket: \(errno)")
+            return
+        }
+
+        var reuse: Int32 = 1
+        setsockopt(tcpSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+        let flags = fcntl(tcpSocket, F_GETFL)
+        _ = fcntl(tcpSocket, F_SETFL, flags | O_NONBLOCK)
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = Self.tcpPort.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let bindResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                bind(tcpSocket, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+
+        guard bindResult == 0 else {
+            logger.error("Failed to bind TCP socket on port \(Self.tcpPort): errno \(errno)")
+            close(tcpSocket)
+            tcpSocket = -1
+            return
+        }
+
+        guard listen(tcpSocket, 10) == 0 else {
+            logger.error("Failed to listen on TCP socket: \(errno)")
+            close(tcpSocket)
+            tcpSocket = -1
+            return
+        }
+
+        logger.info("Listening on TCP port \(Self.tcpPort)")
+
+        tcpAcceptSource = DispatchSource.makeReadSource(fileDescriptor: tcpSocket, queue: queue)
+        tcpAcceptSource?.setEventHandler { [weak self] in
+            self?.acceptTCPConnection()
+        }
+        tcpAcceptSource?.setCancelHandler { [weak self] in
+            if let fd = self?.tcpSocket, fd >= 0 {
+                close(fd)
+                self?.tcpSocket = -1
+            }
+        }
+        tcpAcceptSource?.resume()
+    }
+
+    private func acceptTCPConnection() {
+        let clientSocket = accept(tcpSocket, nil, nil)
+        guard clientSocket >= 0 else { return }
+
+        var nosigpipe: Int32 = 1
+        setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
+
+        handleClient(clientSocket, isRemote: true)
+    }
+
     /// Stop the socket server
     func stop() {
         acceptSource?.cancel()
         acceptSource = nil
         unlink(Self.socketPath)
+
+        tcpAcceptSource?.cancel()
+        tcpAcceptSource = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -364,10 +456,10 @@ class HookSocketServer {
         var nosigpipe: Int32 = 1
         setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
 
-        handleClient(clientSocket)
+        handleClient(clientSocket, isRemote: false)
     }
 
-    private func handleClient(_ clientSocket: Int32) {
+    private func handleClient(_ clientSocket: Int32, isRemote: Bool = false) {
         let flags = fcntl(clientSocket, F_GETFL)
         _ = fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK)
 
@@ -405,13 +497,14 @@ class HookSocketServer {
 
         let data = allData
 
-        guard let event = try? JSONDecoder().decode(HookEvent.self, from: data) else {
+        guard var event = try? JSONDecoder().decode(HookEvent.self, from: data) else {
             logger.warning("Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
             close(clientSocket)
             return
         }
+        event.isRemote = isRemote
 
-        logger.debug("Received: \(event.event, privacy: .public) for \(event.sessionId.prefix(8), privacy: .public)")
+        logger.debug("Received\(isRemote ? " (remote)" : ""): \(event.event, privacy: .public) for \(event.sessionId.prefix(8), privacy: .public)")
 
         if event.event == "PreToolUse" {
             cacheToolUseId(event: event)
@@ -447,7 +540,8 @@ class HookSocketServer {
                 toolInput: event.toolInput,
                 toolUseId: toolUseId,  // Use resolved toolUseId
                 notificationType: event.notificationType,
-                message: event.message
+                message: event.message,
+                isRemote: event.isRemote
             )
 
             let pending = PendingPermission(
