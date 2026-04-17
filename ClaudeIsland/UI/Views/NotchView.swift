@@ -223,14 +223,20 @@ struct NotchView: View {
         Date().timeIntervalSince(usage.receivedAt) > 600
     }
 
+    /// Battery yields its slot to the amber `?` while a permission is pending,
+    /// so the notch doesn't have to expand for both at once.
+    private var shouldShowUsageBattery: Bool {
+        guard let usage = sessionMonitor.usage else { return false }
+        if isUsageStale(usage) { return false }
+        if hasPendingPermission { return false }
+        return true
+    }
+
     /// Extra pixels the closed-state left cluster needs to fit the battery icon.
     /// Includes ~8px of slack past the icon's own width so the left-corner curve
     /// of the notch doesn't clip it.
     private var usageExtraWidth: CGFloat {
-        if let usage = sessionMonitor.usage, !isUsageStale(usage) {
-            return 28
-        }
-        return 0
+        shouldShowUsageBattery ? 28 : 0
     }
 
     @ViewBuilder
@@ -267,7 +273,7 @@ struct NotchView: View {
                     ClaudeCrabIcon(size: 14, animateLegs: isProcessing)
                         .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
 
-                    if let usage = sessionMonitor.usage, !isUsageStale(usage) {
+                    if shouldShowUsageBattery, let usage = sessionMonitor.usage {
                         UsageBatteryView(usage: usage, compact: viewModel.status != .opened)
                     }
 
