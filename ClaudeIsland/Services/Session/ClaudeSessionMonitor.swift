@@ -14,6 +14,7 @@ import Foundation
 class ClaudeSessionMonitor: ObservableObject {
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
+    @Published var usage: UsageInfo?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -25,6 +26,13 @@ class ClaudeSessionMonitor: ObservableObject {
             }
             .store(in: &cancellables)
 
+        SessionStore.shared.usagePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] usage in
+                self?.usage = usage
+            }
+            .store(in: &cancellables)
+
         InterruptWatcherManager.shared.delegate = self
     }
 
@@ -33,6 +41,20 @@ class ClaudeSessionMonitor: ObservableObject {
     func startMonitoring() {
         HookSocketServer.shared.start(
             onEvent: { event in
+                if event.event == "Usage" {
+                    if let pct = event.fiveHourUsedPct, let resets = event.fiveHourResetsAt {
+                        let info = UsageInfo(
+                            fiveHourUsedPct: pct,
+                            fiveHourResetsAt: Date(timeIntervalSince1970: TimeInterval(resets)),
+                            receivedAt: Date()
+                        )
+                        Task {
+                            await SessionStore.shared.process(.usageUpdate(info))
+                        }
+                    }
+                    return
+                }
+
                 Task {
                     await SessionStore.shared.process(.hookReceived(event))
                 }

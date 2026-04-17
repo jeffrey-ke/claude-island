@@ -101,6 +101,33 @@ class SSHTunnelManager: ObservableObject {
     }
 
     private func launchTunnel(host: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await Self.killStaleRemoteTunnels(host: host)
+            guard self.state == .connecting, self.currentHost == host else { return }
+            self.launchTunnelProcess(host: host)
+        }
+    }
+
+    /// Kill orphaned `sshd: <user>` tunnel-only sessions on the remote.
+    /// Our Mac-side `killStaleTunnels()` only reaps the local ssh client; when that
+    /// client dies uncleanly (Xcode SIGKILL, laptop sleep, network drop), the remote
+    /// sshd can linger and keep the reverse-forwarded port bound, causing
+    /// `ExitOnForwardFailure=yes` to fail the next launch with exit 255.
+    /// Regex `^sshd: $USER$` targets only tunnel sessions (shells have `@pts/N`,
+    /// exec sessions have `@notty`).
+    private static func killStaleRemoteTunnels(host: String) async {
+        _ = await ProcessExecutor.shared.runWithResult(
+            "/usr/bin/ssh",
+            arguments: [
+                "-o", "ConnectTimeout=5",
+                host,
+                "pkill -u \"$USER\" -f \"^sshd: $USER\\$\" 2>/dev/null; true"
+            ]
+        )
+    }
+
+    private func launchTunnelProcess(host: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = [

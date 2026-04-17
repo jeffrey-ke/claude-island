@@ -40,6 +40,13 @@ actor SessionStore {
         sessionsSubject.eraseToAnyPublisher()
     }
 
+    /// Global subscription-usage snapshot (account-wide, not per-session)
+    private nonisolated(unsafe) let usageSubject = CurrentValueSubject<UsageInfo?, Never>(nil)
+
+    nonisolated var usagePublisher: AnyPublisher<UsageInfo?, Never> {
+        usageSubject.eraseToAnyPublisher()
+    }
+
     // MARK: - Initialization
 
     private init() {}
@@ -53,6 +60,9 @@ actor SessionStore {
         switch event {
         case .hookReceived(let hookEvent):
             await processHookEvent(hookEvent)
+
+        case .usageUpdate(let info):
+            usageSubject.send(info)
 
         case .permissionApproved(let sessionId, let toolUseId):
             await processPermissionApproved(sessionId: sessionId, toolUseId: toolUseId)
@@ -143,8 +153,23 @@ actor SessionStore {
 
         let newPhase = event.determinePhase()
 
-        if session.phase.canTransition(to: newPhase) {
+        // When waitingForApproval, only allow phase changes from events about
+        // the pending tool, new permission requests, or session-level events (Stop/End).
+        // Unrelated parallel tool events (PostToolUse for a different tool) must NOT
+        // override the approval state — see ssh-bridge-bugs.md #6.
+        let shouldUpdatePhase: Bool
+        if case .waitingForApproval(let ctx) = session.phase, !newPhase.isWaitingForApproval {
+            let isAboutPendingTool = event.toolUseId == ctx.toolUseId && !ctx.toolUseId.isEmpty
+            let isSessionLevelEvent = event.event == "Stop" || event.event == "SessionEnd" || event.event == "UserPromptSubmit"
+            shouldUpdatePhase = isAboutPendingTool || isSessionLevelEvent
+        } else {
+            shouldUpdatePhase = true
+        }
+
+        if shouldUpdatePhase, session.phase.canTransition(to: newPhase) {
             session.phase = newPhase
+        } else if !shouldUpdatePhase {
+            Self.logger.debug("Preserving waitingForApproval: ignoring \(event.event, privacy: .public) for unrelated tool")
         } else {
             Self.logger.debug("Invalid transition: \(String(describing: session.phase), privacy: .public) -> \(String(describing: newPhase), privacy: .public), ignoring")
         }

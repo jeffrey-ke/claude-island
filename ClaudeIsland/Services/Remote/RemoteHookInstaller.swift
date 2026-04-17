@@ -14,6 +14,15 @@ struct RemoteHookInstaller {
 
     private static let hookFilename = "ccbridge-hook.py"
     private static let hookIdentifier = "ccbridge-hook.py"  // String to match in commands
+    private static let statuslineFilename = "ccmonitor-statusline.py"
+    private static let bridgeSendFilename = "bridge_send.py"
+
+    /// (bundled resource basename, ext, remote filename, chmod +x)
+    private static let bundledScripts: [(resource: String, ext: String, remote: String, executable: Bool)] = [
+        ("ccbridge-hook",         "py", "ccbridge-hook.py",         true),
+        ("bridge_send",           "py", "bridge_send.py",           false),
+        ("ccmonitor-statusline",  "py", "ccmonitor-statusline.py",  true),
+    ]
 
     private static let hookEvents: [(event: String, needsMatcher: Bool, needsTimeout: Bool, preCompact: Bool)] = [
         ("UserPromptSubmit", false, false, false),
@@ -28,45 +37,51 @@ struct RemoteHookInstaller {
         ("PreCompact",       false, false, true),
     ]
 
-    /// Install hook script and update settings.json on remote host. Idempotent.
+    /// Install hook scripts and update settings.json on remote host. Idempotent.
     static func install(host: String) async {
-        logger.info("Installing bridge hook on \(host, privacy: .public)")
+        logger.info("Installing bridge hooks on \(host, privacy: .public)")
 
-        // Step 1: Copy hook script to remote
-        guard await copyHookScript(host: host) else { return }
+        // Step 1: Copy all hook scripts to remote (ccbridge, bridge_send, statusline)
+        for script in bundledScripts {
+            guard await copyBundledScript(host: host, resource: script.resource, ext: script.ext, remote: script.remote, executable: script.executable) else {
+                logger.error("Bailing out: failed to copy \(script.remote, privacy: .public)")
+                return
+            }
+        }
 
         // Step 2: Read remote settings.json
         guard let settingsJSON = await readRemoteSettings(host: host) else { return }
 
-        // Step 3: Update hooks (idempotent)
+        // Step 3: Update hooks + statusLine (idempotent)
         var json = settingsJSON
-        let changed = addHooks(to: &json, python: "python3")
+        let hooksChanged = addHooks(to: &json, python: "python3")
+        let statuslineChanged = addStatusLine(to: &json, python: "python3")
 
         // Step 4: Write back if changed
-        if changed {
+        if hooksChanged || statuslineChanged {
             await writeRemoteSettings(host: host, json: json)
         } else {
-            logger.info("Hooks already installed on \(host, privacy: .public)")
+            logger.info("Hooks + statusLine already installed on \(host, privacy: .public)")
         }
     }
 
     // MARK: - Private
 
-    private static func copyHookScript(host: String) async -> Bool {
-        // Read bundled hook script
-        guard let bundledURL = Bundle.main.url(forResource: "ccbridge-hook", withExtension: "py"),
+    private static func copyBundledScript(host: String, resource: String, ext: String, remote: String, executable: Bool) async -> Bool {
+        guard let bundledURL = Bundle.main.url(forResource: resource, withExtension: ext),
               let scriptContent = try? String(contentsOf: bundledURL, encoding: .utf8) else {
-            logger.error("Failed to read bundled \(hookFilename)")
+            logger.error("Failed to read bundled \(remote, privacy: .public)")
             return false
         }
 
-        // Use Process directly (need stdin pipe for script content)
+        let chmodCmd = executable ? " && chmod +x ~/.claude/hooks/\(remote)" : ""
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = [
             "-o", "ConnectTimeout=5",
             host,
-            "mkdir -p ~/.claude/hooks && cat > ~/.claude/hooks/\(hookFilename) && chmod +x ~/.claude/hooks/\(hookFilename)"
+            "mkdir -p ~/.claude/hooks && cat > ~/.claude/hooks/\(remote)\(chmodCmd)"
         ]
 
         let stdinPipe = Pipe()
@@ -81,14 +96,14 @@ struct RemoteHookInstaller {
             process.waitUntilExit()
 
             if process.terminationStatus == 0 {
-                logger.info("Copied \(hookFilename) to \(host, privacy: .public)")
+                logger.info("Copied \(remote, privacy: .public) to \(host, privacy: .public)")
                 return true
             } else {
-                logger.error("Failed to copy hook script, exit code \(process.terminationStatus)")
+                logger.error("Failed to copy \(remote, privacy: .public), exit code \(process.terminationStatus)")
                 return false
             }
         } catch {
-            logger.error("Failed to launch scp: \(error.localizedDescription, privacy: .public)")
+            logger.error("Failed to launch ssh for \(remote, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
     }
@@ -196,5 +211,27 @@ struct RemoteHookInstaller {
 
         json["hooks"] = hooks
         return changed
+    }
+
+    /// Add ccmonitor statusLine, skipping if the user already has a non-ccmonitor statusLine.
+    /// Returns true if the settings were modified.
+    private static func addStatusLine(to json: inout [String: Any], python: String) -> Bool {
+        let command = "\(python) ~/.claude/hooks/\(statuslineFilename)"
+
+        if let existing = json["statusLine"] as? [String: Any],
+           let existingCmd = existing["command"] as? String {
+            if existingCmd.contains(statuslineFilename) {
+                // Already ours — keep or refresh.
+                if existingCmd == command { return false }
+                json["statusLine"] = ["type": "command", "command": command]
+                return true
+            } else {
+                logger.warning("Existing statusLine on remote is not ccmonitor (\(existingCmd, privacy: .public)); skipping")
+                return false
+            }
+        }
+
+        json["statusLine"] = ["type": "command", "command": command]
+        return true
     }
 }

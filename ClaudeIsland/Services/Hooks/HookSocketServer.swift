@@ -25,6 +25,11 @@ struct HookEvent: Codable, Sendable {
     let toolUseId: String?
     let notificationType: String?
     let message: String?
+    /// Subscription usage — populated only on Usage events from ccmonitor-statusline.py
+    let fiveHourUsedPct: Double?
+    let fiveHourResetsAt: Int?
+    let sevenDayUsedPct: Double?
+    let sevenDayResetsAt: Int?
     /// Whether this event came from a remote session (via TCP bridge)
     var isRemote: Bool
 
@@ -35,9 +40,13 @@ struct HookEvent: Codable, Sendable {
         case toolUseId = "tool_use_id"
         case notificationType = "notification_type"
         case message
+        case fiveHourUsedPct = "five_hour_used_pct"
+        case fiveHourResetsAt = "five_hour_resets_at"
+        case sevenDayUsedPct = "seven_day_used_pct"
+        case sevenDayResetsAt = "seven_day_resets_at"
     }
 
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, isRemote: Bool = false) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, fiveHourUsedPct: Double? = nil, fiveHourResetsAt: Int? = nil, sevenDayUsedPct: Double? = nil, sevenDayResetsAt: Int? = nil, isRemote: Bool = false) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -49,15 +58,20 @@ struct HookEvent: Codable, Sendable {
         self.toolUseId = toolUseId
         self.notificationType = notificationType
         self.message = message
+        self.fiveHourUsedPct = fiveHourUsedPct
+        self.fiveHourResetsAt = fiveHourResetsAt
+        self.sevenDayUsedPct = sevenDayUsedPct
+        self.sevenDayResetsAt = sevenDayResetsAt
         self.isRemote = isRemote
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        sessionId = try container.decode(String.self, forKey: .sessionId)
-        cwd = try container.decode(String.self, forKey: .cwd)
         event = try container.decode(String.self, forKey: .event)
-        status = try container.decode(String.self, forKey: .status)
+        // Usage events carry no session context; default these so decode succeeds.
+        sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId) ?? ""
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
         pid = try container.decodeIfPresent(Int.self, forKey: .pid)
         tty = try container.decodeIfPresent(String.self, forKey: .tty)
         tool = try container.decodeIfPresent(String.self, forKey: .tool)
@@ -65,6 +79,10 @@ struct HookEvent: Codable, Sendable {
         toolUseId = try container.decodeIfPresent(String.self, forKey: .toolUseId)
         notificationType = try container.decodeIfPresent(String.self, forKey: .notificationType)
         message = try container.decodeIfPresent(String.self, forKey: .message)
+        fiveHourUsedPct = try container.decodeIfPresent(Double.self, forKey: .fiveHourUsedPct)
+        fiveHourResetsAt = try container.decodeIfPresent(Int.self, forKey: .fiveHourResetsAt)
+        sevenDayUsedPct = try container.decodeIfPresent(Double.self, forKey: .sevenDayUsedPct)
+        sevenDayResetsAt = try container.decodeIfPresent(Int.self, forKey: .sevenDayResetsAt)
         isRemote = false  // Set by server after decoding
     }
 
@@ -264,6 +282,8 @@ class HookSocketServer {
 
         logger.info("Listening on TCP port \(Self.tcpPort)")
 
+        writeLocalBridgePort()
+
         tcpAcceptSource = DispatchSource.makeReadSource(fileDescriptor: tcpSocket, queue: queue)
         tcpAcceptSource?.setEventHandler { [weak self] in
             self?.acceptTCPConnection()
@@ -278,13 +298,22 @@ class HookSocketServer {
     }
 
     private func acceptTCPConnection() {
-        let clientSocket = accept(tcpSocket, nil, nil)
+        var peerAddr = sockaddr_in()
+        var peerLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let clientSocket = withUnsafeMutablePointer(to: &peerAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                accept(tcpSocket, sockaddrPtr, &peerLen)
+            }
+        }
         guard clientSocket >= 0 else { return }
 
         var nosigpipe: Int32 = 1
         setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
 
-        handleClient(clientSocket, isRemote: true)
+        // Loopback connections come from our own Mac-local statusline via bridge_port=19876.
+        // Flag them as local so logs and state distinguish Mac from real remote hosts.
+        let isLoopback = peerAddr.sin_addr.s_addr == inet_addr("127.0.0.1")
+        handleClient(clientSocket, isRemote: !isLoopback)
     }
 
     /// Stop the socket server
@@ -296,12 +325,36 @@ class HookSocketServer {
         tcpAcceptSource?.cancel()
         tcpAcceptSource = nil
 
+        removeLocalBridgePort()
+
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
             close(pending.clientSocket)
         }
         pendingPermissions.removeAll()
         permissionsLock.unlock()
+    }
+
+    /// Publish our TCP port so the Mac-local statusline script can loopback TCP-send
+    /// Mirrors the remote-side writeBridgePort in SSHTunnelManager
+    private func writeLocalBridgePort() {
+        let runDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/run")
+        try? FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true)
+        let portFile = runDir.appendingPathComponent("bridge_port")
+        let contents = "\(Self.tcpPort)\n"
+        do {
+            try contents.write(to: portFile, atomically: true, encoding: .utf8)
+            logger.info("Wrote local bridge_port: \(Self.tcpPort)")
+        } catch {
+            logger.error("Failed to write local bridge_port: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func removeLocalBridgePort() {
+        let portFile = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/run/bridge_port")
+        try? FileManager.default.removeItem(at: portFile)
     }
 
     /// Respond to a pending permission request by toolUseId

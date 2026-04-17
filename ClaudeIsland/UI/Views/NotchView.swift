@@ -73,7 +73,7 @@ struct NotchView: View {
             switch activityCoordinator.expandingActivity.type {
             case .claude:
                 let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
+                return baseWidth + permissionIndicatorWidth + usageExtraWidth
             case .none:
                 break
             }
@@ -81,12 +81,12 @@ struct NotchView: View {
 
         // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
         if hasPendingPermission {
-            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth
+            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth + usageExtraWidth
         }
 
         // Waiting for input just shows checkmark on right, no extra left indicator
         if hasWaitingForInput {
-            return 2 * max(0, closedNotchSize.height - 12) + 20
+            return 2 * max(0, closedNotchSize.height - 12) + 20 + usageExtraWidth
         }
 
         return 0
@@ -218,6 +218,21 @@ struct NotchView: View {
         isProcessing || hasPendingPermission || hasWaitingForInput
     }
 
+    /// Stale guard — hide usage bar if the last statusline event is >10 minutes old
+    private func isUsageStale(_ usage: UsageInfo) -> Bool {
+        Date().timeIntervalSince(usage.receivedAt) > 600
+    }
+
+    /// Extra pixels the closed-state left cluster needs to fit the battery icon.
+    /// Includes ~8px of slack past the icon's own width so the left-corner curve
+    /// of the notch doesn't clip it.
+    private var usageExtraWidth: CGFloat {
+        if let usage = sessionMonitor.usage, !isUsageStale(usage) {
+            return 28
+        }
+        return 0
+    }
+
     @ViewBuilder
     private var notchLayout: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -252,13 +267,17 @@ struct NotchView: View {
                     ClaudeCrabIcon(size: 14, animateLegs: isProcessing)
                         .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
 
+                    if let usage = sessionMonitor.usage, !isUsageStale(usage) {
+                        UsageBatteryView(usage: usage, compact: viewModel.status != .opened)
+                    }
+
                     // Permission indicator only (amber) - waiting for input shows checkmark on right
                     if hasPendingPermission {
                         PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
                             .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showClosedActivity)
                     }
                 }
-                .frame(width: viewModel.status == .opened ? nil : sideWidth + (hasPendingPermission ? 18 : 0))
+                .frame(width: viewModel.status == .opened ? nil : sideWidth + (hasPendingPermission ? 18 : 0) + usageExtraWidth)
                 .padding(.leading, viewModel.status == .opened ? 8 : 0)
             }
 
