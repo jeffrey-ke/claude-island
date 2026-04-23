@@ -61,18 +61,18 @@ actor ToolApprovalHandler {
         let textArgs = ["send-keys", "-t", targetStr, "-l", keys]
 
         do {
-            Self.logger.debug("Sending text to \(targetStr, privacy: .public)")
+            Self.logger.debug("\(LogTS.now()) Sending text to \(targetStr, privacy: .public)")
             _ = try await ProcessExecutor.shared.run(tmuxPath, arguments: textArgs)
 
             // Send Enter as a separate command if needed
             if pressEnter {
-                Self.logger.debug("Sending Enter key")
+                Self.logger.debug("\(LogTS.now()) Sending Enter key")
                 let enterArgs = ["send-keys", "-t", targetStr, "Enter"]
                 _ = try await ProcessExecutor.shared.run(tmuxPath, arguments: enterArgs)
             }
             return true
         } catch {
-            Self.logger.error("Error: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("\(LogTS.now()) Error: \(error.localizedDescription, privacy: .public)")
             return false
         }
     }

@@ -39,12 +39,12 @@ struct RemoteHookInstaller {
 
     /// Install hook scripts and update settings.json on remote host. Idempotent.
     static func install(host: String) async {
-        logger.info("Installing bridge hooks on \(host, privacy: .public)")
+        logger.info("\(LogTS.now()) Installing bridge hooks on \(host, privacy: .public)")
 
         // Step 1: Copy all hook scripts to remote (ccbridge, bridge_send, statusline)
         for script in bundledScripts {
             guard await copyBundledScript(host: host, resource: script.resource, ext: script.ext, remote: script.remote, executable: script.executable) else {
-                logger.error("Bailing out: failed to copy \(script.remote, privacy: .public)")
+                logger.error("\(LogTS.now()) Bailing out: failed to copy \(script.remote, privacy: .public)")
                 return
             }
         }
@@ -61,7 +61,7 @@ struct RemoteHookInstaller {
         if hooksChanged || statuslineChanged {
             await writeRemoteSettings(host: host, json: json)
         } else {
-            logger.info("Hooks + statusLine already installed on \(host, privacy: .public)")
+            logger.info("\(LogTS.now()) Hooks + statusLine already installed on \(host, privacy: .public)")
         }
     }
 
@@ -70,7 +70,7 @@ struct RemoteHookInstaller {
     private static func copyBundledScript(host: String, resource: String, ext: String, remote: String, executable: Bool) async -> Bool {
         guard let bundledURL = Bundle.main.url(forResource: resource, withExtension: ext),
               let scriptContent = try? String(contentsOf: bundledURL, encoding: .utf8) else {
-            logger.error("Failed to read bundled \(remote, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to read bundled \(remote, privacy: .public)")
             return false
         }
 
@@ -96,14 +96,14 @@ struct RemoteHookInstaller {
             process.waitUntilExit()
 
             if process.terminationStatus == 0 {
-                logger.info("Copied \(remote, privacy: .public) to \(host, privacy: .public)")
+                logger.info("\(LogTS.now()) Copied \(remote, privacy: .public) to \(host, privacy: .public)")
                 return true
             } else {
-                logger.error("Failed to copy \(remote, privacy: .public), exit code \(process.terminationStatus)")
+                logger.error("\(LogTS.now()) Failed to copy \(remote, privacy: .public), exit code \(process.terminationStatus)")
                 return false
             }
         } catch {
-            logger.error("Failed to launch ssh for \(remote, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to launch ssh for \(remote, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
     }
@@ -118,12 +118,12 @@ struct RemoteHookInstaller {
         case .success(let processResult):
             guard let data = processResult.output.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                logger.error("Failed to parse remote settings.json")
+                logger.error("\(LogTS.now()) Failed to parse remote settings.json")
                 return [:]
             }
             return json
         case .failure(let error):
-            logger.error("Failed to read remote settings: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to read remote settings: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -131,7 +131,7 @@ struct RemoteHookInstaller {
     private static func writeRemoteSettings(host: String, json: [String: Any]) async {
         guard let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
               let jsonString = String(data: data, encoding: .utf8) else {
-            logger.error("Failed to serialize settings JSON")
+            logger.error("\(LogTS.now()) Failed to serialize settings JSON")
             return
         }
 
@@ -155,12 +155,12 @@ struct RemoteHookInstaller {
             process.waitUntilExit()
 
             if process.terminationStatus == 0 {
-                logger.info("Updated settings.json on \(host, privacy: .public)")
+                logger.info("\(LogTS.now()) Updated settings.json on \(host, privacy: .public)")
             } else {
-                logger.error("Failed to write settings.json, exit code \(process.terminationStatus)")
+                logger.error("\(LogTS.now()) Failed to write settings.json, exit code \(process.terminationStatus)")
             }
         } catch {
-            logger.error("Failed to write remote settings: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to write remote settings: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -226,7 +226,7 @@ struct RemoteHookInstaller {
                 json["statusLine"] = ["type": "command", "command": command]
                 return true
             } else {
-                logger.warning("Existing statusLine on remote is not ccmonitor (\(existingCmd, privacy: .public)); skipping")
+                logger.warning("\(LogTS.now()) Existing statusLine on remote is not ccmonitor (\(existingCmd, privacy: .public)); skipping")
                 return false
             }
         }

@@ -55,7 +55,7 @@ actor SessionStore {
 
     /// Process any session event - the ONLY way to mutate state
     func process(_ event: SessionEvent) async {
-        Self.logger.debug("Processing: \(String(describing: event), privacy: .public)")
+        Self.logger.debug("\(LogTS.now()) Processing: \(String(describing: event), privacy: .public)")
 
         switch event {
         case .hookReceived(let hookEvent):
@@ -162,20 +162,25 @@ actor SessionStore {
             let isAboutPendingTool = event.toolUseId == ctx.toolUseId && !ctx.toolUseId.isEmpty
             let isSessionLevelEvent = event.event == "Stop" || event.event == "SessionEnd" || event.event == "UserPromptSubmit"
             shouldUpdatePhase = isAboutPendingTool || isSessionLevelEvent
+            Self.logger.debug("\(LogTS.now()) PhaseCheck[\(event.event, privacy: .public)] event.toolUseId=\(event.toolUseId ?? "nil", privacy: .public) ctx.toolUseId=\(ctx.toolUseId, privacy: .public) isAboutPendingTool=\(isAboutPendingTool) isSessionLevelEvent=\(isSessionLevelEvent) shouldUpdatePhase=\(shouldUpdatePhase)")
         } else {
             shouldUpdatePhase = true
         }
 
         if shouldUpdatePhase, session.phase.canTransition(to: newPhase) {
+            let oldPhase = session.phase
             session.phase = newPhase
+            if case .waitingForApproval = oldPhase, !newPhase.isWaitingForApproval {
+                Self.logger.debug("\(LogTS.now()) Exiting waitingForApproval via \(event.event, privacy: .public) toolUseId=\(event.toolUseId ?? "nil", privacy: .public) newPhase=\(String(describing: newPhase), privacy: .public)")
+            }
         } else if !shouldUpdatePhase {
-            Self.logger.debug("Preserving waitingForApproval: ignoring \(event.event, privacy: .public) for unrelated tool")
+            Self.logger.debug("\(LogTS.now()) Preserving waitingForApproval: ignoring \(event.event, privacy: .public) for unrelated tool (event.toolUseId=\(event.toolUseId ?? "nil", privacy: .public))")
         } else {
-            Self.logger.debug("Invalid transition: \(String(describing: session.phase), privacy: .public) -> \(String(describing: newPhase), privacy: .public), ignoring")
+            Self.logger.debug("\(LogTS.now()) Invalid transition: \(String(describing: session.phase), privacy: .public) -> \(String(describing: newPhase), privacy: .public), ignoring")
         }
 
         if event.event == "PermissionRequest", let toolUseId = event.toolUseId {
-            Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
+            Self.logger.debug("\(LogTS.now()) Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
             updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
         }
 
@@ -186,10 +191,34 @@ actor SessionStore {
             session.subagentState = SubagentState()
         }
 
+        // Turn-boundary zombie sweep: any chatItem still marked .waitingForApproval
+        // without a live permission socket is stale (remote session died mid-prompt, etc.)
+        // Mark it .interrupted so findNextPendingTool won't resurrect the phase onto it.
+        // See ssh-bridge-bugs.md #7.
+        if event.event == "Stop" || event.event == "SessionStart" || event.event == "UserPromptSubmit" {
+            sweepZombieApprovals(in: &session)
+        }
+
+        // Remote sessions have no JSONL on the Mac, so ConversationParser can't
+        // populate chatItems. Forward hook-carried message content into the chat.
+        // Local sessions: skip — ConversationParser owns their chat items.
+        if event.isRemote,
+           event.event == "UserPromptSubmit" || event.event == "Stop",
+           let message = event.message, !message.isEmpty,
+           let role = event.messageRole {
+            appendRemoteChatMessage(
+                session: &session,
+                role: role,
+                text: message,
+                isStale: event.messageStale == true,
+                event: event.event
+            )
+        }
+
         sessions[sessionId] = session
         publishState()
 
-        if event.shouldSyncFile {
+        if event.shouldSyncFile && !event.isRemote {
             scheduleFileSync(sessionId: sessionId, cwd: event.cwd)
         }
     }
@@ -248,7 +277,7 @@ actor SessionStore {
                         timestamp: Date()
                     )
                     session.chatItems.append(placeholderItem)
-                    Self.logger.debug("Created placeholder tool entry for \(toolUseId.prefix(16), privacy: .public)")
+                    Self.logger.debug("\(LogTS.now()) Created placeholder tool entry for \(toolUseId.prefix(16), privacy: .public)")
                 }
             }
 
@@ -277,24 +306,68 @@ actor SessionStore {
         }
     }
 
+    /// Append a user or assistant chat bubble from a hook-forwarded message.
+    /// Dedup ID includes millisecond timestamp so a replayed hook event won't double-append.
+    private func appendRemoteChatMessage(
+        session: inout SessionState,
+        role: String,
+        text: String,
+        isStale: Bool,
+        event: String
+    ) {
+        let tsMs = Int(Date().timeIntervalSince1970 * 1000)
+        let id = "hook-\(event)-\(session.sessionId)-\(role)-\(tsMs)"
+        let logPreview = String(text.prefix(80)).replacingOccurrences(of: "\n", with: "\\n")
+        let sessionPrefix = String(session.sessionId.prefix(8))
+        if session.chatItems.contains(where: { $0.id == id }) {
+            Self.logger.debug("\(LogTS.now()) appendRemoteChatMessage DEDUPED id=\(id, privacy: .public) preview=\(logPreview, privacy: .public)")
+            return
+        }
+        Self.logger.debug("\(LogTS.now()) appendRemoteChatMessage APPENDING event=\(event, privacy: .public) role=\(role, privacy: .public) session=\(sessionPrefix, privacy: .public) len=\(text.count) preview=\(logPreview, privacy: .public)")
+
+        let itemType: ChatHistoryItemType
+        switch role {
+        case "user": itemType = .user(text)
+        case "assistant": itemType = .assistant(text)
+        default:
+            Self.logger.debug("\(LogTS.now()) Ignoring hook message with unknown role \(role, privacy: .public)")
+            return
+        }
+
+        let item = ChatHistoryItem(id: id, type: itemType, timestamp: Date(), isStale: isStale)
+        session.chatItems.append(item)
+
+        let preview = String(text.prefix(200))
+        let old = session.conversationInfo
+        let isUser = role == "user"
+        session.conversationInfo = ConversationInfo(
+            summary: old.summary,
+            lastMessage: preview,
+            lastMessageRole: role,
+            lastToolName: old.lastToolName,
+            firstUserMessage: isUser ? (old.firstUserMessage ?? preview) : old.firstUserMessage,
+            lastUserMessageDate: isUser ? Date() : old.lastUserMessageDate
+        )
+    }
+
     private func processSubagentTracking(event: HookEvent, session: inout SessionState) {
         switch event.event {
         case "PreToolUse":
             if event.tool == "Task", let toolUseId = event.toolUseId {
                 let description = event.toolInput?["description"]?.value as? String
                 session.subagentState.startTask(taskToolId: toolUseId, description: description)
-                Self.logger.debug("Started Task subagent tracking: \(toolUseId.prefix(12), privacy: .public)")
+                Self.logger.debug("\(LogTS.now()) Started Task subagent tracking: \(toolUseId.prefix(12), privacy: .public)")
             }
 
         case "PostToolUse":
             if event.tool == "Task" {
-                Self.logger.debug("PostToolUse for Task received (subagent still running)")
+                Self.logger.debug("\(LogTS.now()) PostToolUse for Task received (subagent still running)")
             }
 
         case "SubagentStop":
             // SubagentStop fires when a subagent completes - stop tracking
             // Subagent tools are populated from agent file in processFileUpdated
-            Self.logger.debug("SubagentStop received")
+            Self.logger.debug("\(LogTS.now()) SubagentStop received")
 
         default:
             break
@@ -359,7 +432,7 @@ actor SessionStore {
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool: \(nextPending.id.prefix(12), privacy: .public)")
+                Self.logger.debug("\(LogTS.now()) Switched to next pending tool: \(nextPending.id.prefix(12), privacy: .public)")
             }
         } else {
             // No more pending tools - transition to processing
@@ -406,7 +479,7 @@ actor SessionStore {
                     type: .toolCall(tool),
                     timestamp: session.chatItems[i].timestamp
                 )
-                Self.logger.debug("Tool \(toolUseId.prefix(12), privacy: .public) completed with status: \(String(describing: result.status), privacy: .public)")
+                Self.logger.debug("\(LogTS.now()) Tool \(toolUseId.prefix(12), privacy: .public) completed with status: \(String(describing: result.status), privacy: .public)")
                 break
             }
         }
@@ -422,7 +495,7 @@ actor SessionStore {
                     receivedAt: nextPending.timestamp
                 ))
                 session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool after completion: \(nextPending.id.prefix(12), privacy: .public)")
+                Self.logger.debug("\(LogTS.now()) Switched to next pending tool after completion: \(nextPending.id.prefix(12), privacy: .public)")
             } else {
                 if session.phase.canTransition(to: .processing) {
                     session.phase = .processing
@@ -433,15 +506,41 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
-    /// Find the next tool waiting for approval (excluding a specific tool ID)
+    /// Find the next tool waiting for approval (excluding a specific tool ID).
+    /// Cross-checks HookSocketServer.pendingPermissions to skip zombie chatItems whose
+    /// PermissionRequest was never resolved (e.g. remote session died mid-prompt).
+    /// Without this, `processPermissionApproved` can resurrect the phase onto a stale
+    /// toolUseId that will never receive matching events — see ssh-bridge-bugs.md #7.
     private func findNextPendingTool(in session: SessionState, excluding toolId: String) -> (id: String, name: String, timestamp: Date)? {
         for item in session.chatItems {
             if item.id == toolId { continue }
-            if case .toolCall(let tool) = item.type, tool.status == .waitingForApproval {
-                return (id: item.id, name: tool.name, timestamp: item.timestamp)
+            guard case .toolCall(let tool) = item.type, tool.status == .waitingForApproval else { continue }
+            if !HookSocketServer.shared.isPermissionLive(toolUseId: item.id) {
+                Self.logger.debug("\(LogTS.now()) findNextPendingTool: skipping zombie \(item.id.prefix(12), privacy: .public) (no live permission socket)")
+                continue
             }
+            return (id: item.id, name: tool.name, timestamp: item.timestamp)
         }
         return nil
+    }
+
+    /// Mark any `.waitingForApproval` chatItems without a live permission socket as
+    /// `.interrupted`. Called on turn boundaries to clean up zombies from dead remote
+    /// sessions. See ssh-bridge-bugs.md #7.
+    private func sweepZombieApprovals(in session: inout SessionState) {
+        for i in 0..<session.chatItems.count {
+            guard case .toolCall(var tool) = session.chatItems[i].type,
+                  tool.status == .waitingForApproval else { continue }
+            let toolId = session.chatItems[i].id
+            if HookSocketServer.shared.isPermissionLive(toolUseId: toolId) { continue }
+            tool.status = .interrupted
+            session.chatItems[i] = ChatHistoryItem(
+                id: toolId,
+                type: .toolCall(tool),
+                timestamp: session.chatItems[i].timestamp
+            )
+            Self.logger.debug("\(LogTS.now()) sweepZombieApprovals: marked \(toolId.prefix(12), privacy: .public) as interrupted")
+        }
     }
 
     private func processPermissionDenied(sessionId: String, toolUseId: String, reason: String?) async {
@@ -461,7 +560,7 @@ actor SessionStore {
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool after denial: \(nextPending.id.prefix(12), privacy: .public)")
+                Self.logger.debug("\(LogTS.now()) Switched to next pending tool after denial: \(nextPending.id.prefix(12), privacy: .public)")
             }
         } else {
             // No more pending tools - transition to processing (Claude will handle denial)
@@ -497,7 +596,7 @@ actor SessionStore {
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool after socket failure: \(nextPending.id.prefix(12), privacy: .public)")
+                Self.logger.debug("\(LogTS.now()) Switched to next pending tool after socket failure: \(nextPending.id.prefix(12), privacy: .public)")
             }
         } else {
             // No more pending tools - clear permission state
@@ -553,7 +652,7 @@ actor SessionStore {
             session.subagentState = SubagentState()
 
             session.needsClearReconciliation = false
-            Self.logger.debug("Clear reconciliation: kept \(session.chatItems.count) of \(previousCount) items")
+            Self.logger.debug("\(LogTS.now()) Clear reconciliation: kept \(session.chatItems.count) of \(previousCount) items")
         }
 
         if payload.isIncremental {
@@ -667,6 +766,9 @@ actor SessionStore {
         cwd: String,
         structuredResults: [String: ToolResultData]
     ) async {
+        // Remote sessions have no Mac-local agent JSONL files.
+        if session.isRemote { return }
+
         for i in 0..<session.chatItems.count {
             guard case .toolCall(var tool) = session.chatItems[i].type,
                   tool.name == "Task",
@@ -706,7 +808,7 @@ actor SessionStore {
                 timestamp: session.chatItems[i].timestamp
             )
 
-            Self.logger.debug("Populated \(subagentToolInfos.count) subagent tools for Task \(taskToolId.prefix(12), privacy: .public) from agent \(taskResult.agentId.prefix(8), privacy: .public)")
+            Self.logger.debug("\(LogTS.now()) Populated \(subagentToolInfos.count) subagent tools for Task \(taskToolId.prefix(12), privacy: .public) from agent \(taskResult.agentId.prefix(8), privacy: .public)")
         }
     }
 
@@ -817,7 +919,7 @@ actor SessionStore {
         }
         if !found {
             let count = session.chatItems.count
-            Self.logger.warning("Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
+            Self.logger.warning("\(LogTS.now()) Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
         }
     }
 
@@ -855,14 +957,14 @@ actor SessionStore {
     private func processClearDetected(sessionId: String) async {
         guard var session = sessions[sessionId] else { return }
 
-        Self.logger.info("Processing /clear for session \(sessionId.prefix(8), privacy: .public)")
+        Self.logger.info("\(LogTS.now()) Processing /clear for session \(sessionId.prefix(8), privacy: .public)")
 
         // Mark that a clear happened - the next fileUpdated will reconcile
         // by removing items that no longer exist in the parser's state
         session.needsClearReconciliation = true
         sessions[sessionId] = session
 
-        Self.logger.info("/clear processed for session \(sessionId.prefix(8), privacy: .public) - marked for reconciliation")
+        Self.logger.info("\(LogTS.now()) /clear processed for session \(sessionId.prefix(8), privacy: .public) - marked for reconciliation")
     }
 
     // MARK: - Session End Processing
@@ -872,9 +974,20 @@ actor SessionStore {
         cancelPendingSync(sessionId: sessionId)
     }
 
+    // MARK: - Public Lookups
+
+    /// Whether a known session is remote. Used by external helpers that need to gate
+    /// Mac-local file I/O (JSONL reads, agent-file parsing) on bridge-sourced sessions.
+    func isRemote(sessionId: String) -> Bool {
+        sessions[sessionId]?.isRemote ?? false
+    }
+
     // MARK: - History Loading
 
     private func loadHistoryFromFile(sessionId: String, cwd: String) async {
+        // Remote sessions have no Mac-local JSONL; chat comes from the hook bridge.
+        if sessions[sessionId]?.isRemote == true { return }
+
         // Parse file asynchronously
         let messages = await ConversationParser.shared.parseFullConversation(
             sessionId: sessionId,

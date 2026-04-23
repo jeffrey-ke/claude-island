@@ -42,6 +42,7 @@ class AgentFileWatcher {
 
         let projectDir = cwd.replacingOccurrences(of: "/", with: "-")
                             .replacingOccurrences(of: ".", with: "-")
+                            .replacingOccurrences(of: "_", with: "-")
         self.filePath = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/agent-" + agentId + ".jsonl"
     }
 
@@ -57,7 +58,7 @@ class AgentFileWatcher {
 
         guard FileManager.default.fileExists(atPath: filePath),
               let handle = FileHandle(forReadingAtPath: filePath) else {
-            logger.warning("Failed to open agent file: \(self.filePath, privacy: .public)")
+            logger.warning("\(LogTS.now()) Failed to open agent file: \(self.filePath, privacy: .public)")
             return
         }
 
@@ -68,7 +69,7 @@ class AgentFileWatcher {
         do {
             lastOffset = try handle.seekToEnd()
         } catch {
-            logger.error("Failed to seek to end: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to seek to end: \(error.localizedDescription, privacy: .public)")
             return
         }
 
@@ -91,7 +92,7 @@ class AgentFileWatcher {
         source = newSource
         newSource.resume()
 
-        logger.debug("Started watching agent file: \(self.agentId.prefix(8), privacy: .public) for task: \(self.taskToolId.prefix(12), privacy: .public)")
+        logger.debug("\(LogTS.now()) Started watching agent file: \(self.agentId.prefix(8), privacy: .public) for task: \(self.taskToolId.prefix(12), privacy: .public)")
     }
 
     private func parseTools() {
@@ -101,7 +102,7 @@ class AgentFileWatcher {
         guard !newTools.isEmpty || tools.count != seenToolIds.count else { return }
 
         seenToolIds = Set(tools.map { $0.id })
-        logger.debug("Agent \(self.agentId.prefix(8), privacy: .public) has \(tools.count) tools")
+        logger.debug("\(LogTS.now()) Agent \(self.agentId.prefix(8), privacy: .public) has \(tools.count) tools")
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -122,7 +123,7 @@ class AgentFileWatcher {
 
     private func stopInternal() {
         if source != nil {
-            logger.debug("Stopped watching agent file: \(self.agentId.prefix(8), privacy: .public)")
+            logger.debug("\(LogTS.now()) Stopped watching agent file: \(self.agentId.prefix(8), privacy: .public)")
         }
         source?.cancel()
         source = nil
@@ -161,7 +162,7 @@ class AgentFileWatcherManager {
         watcher.start()
         watchers[key] = watcher
 
-        logger.info("Started agent watcher for task \(taskToolId.prefix(12), privacy: .public)")
+        logger.info("\(LogTS.now()) Started agent watcher for task \(taskToolId.prefix(12), privacy: .public)")
     }
 
     /// Stop watching a specific Task's agent file

@@ -25,12 +25,19 @@ struct HookEvent: Codable, Sendable {
     let toolUseId: String?
     let notificationType: String?
     let message: String?
+    /// Hook-forwarded conversation content: "user" or "assistant" (remote sessions only)
+    let messageRole: String?
+    /// Set to true when the hook forwarded a placeholder because JSONL flush timed out
+    let messageStale: Bool?
     /// Subscription usage — populated only on Usage events from ccmonitor-statusline.py
     let fiveHourUsedPct: Double?
     let fiveHourResetsAt: Int?
     let sevenDayUsedPct: Double?
     let sevenDayResetsAt: Int?
-    /// Whether this event came from a remote session (via TCP bridge)
+    /// Whether this event came from a remote session (via TCP bridge).
+    /// Carried in the payload by ccbridge-hook.py (as `is_remote`); the Mac
+    /// cannot infer this from peer IP because the SSH reverse tunnel makes
+    /// remote connections look like loopback (same as Mac-local statusline).
     var isRemote: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -40,13 +47,16 @@ struct HookEvent: Codable, Sendable {
         case toolUseId = "tool_use_id"
         case notificationType = "notification_type"
         case message
+        case messageRole = "message_role"
+        case messageStale = "message_stale"
+        case isRemote = "is_remote"
         case fiveHourUsedPct = "five_hour_used_pct"
         case fiveHourResetsAt = "five_hour_resets_at"
         case sevenDayUsedPct = "seven_day_used_pct"
         case sevenDayResetsAt = "seven_day_resets_at"
     }
 
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, fiveHourUsedPct: Double? = nil, fiveHourResetsAt: Int? = nil, sevenDayUsedPct: Double? = nil, sevenDayResetsAt: Int? = nil, isRemote: Bool = false) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, messageRole: String? = nil, messageStale: Bool? = nil, fiveHourUsedPct: Double? = nil, fiveHourResetsAt: Int? = nil, sevenDayUsedPct: Double? = nil, sevenDayResetsAt: Int? = nil, isRemote: Bool = false) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -58,6 +68,8 @@ struct HookEvent: Codable, Sendable {
         self.toolUseId = toolUseId
         self.notificationType = notificationType
         self.message = message
+        self.messageRole = messageRole
+        self.messageStale = messageStale
         self.fiveHourUsedPct = fiveHourUsedPct
         self.fiveHourResetsAt = fiveHourResetsAt
         self.sevenDayUsedPct = sevenDayUsedPct
@@ -79,11 +91,15 @@ struct HookEvent: Codable, Sendable {
         toolUseId = try container.decodeIfPresent(String.self, forKey: .toolUseId)
         notificationType = try container.decodeIfPresent(String.self, forKey: .notificationType)
         message = try container.decodeIfPresent(String.self, forKey: .message)
+        messageRole = try container.decodeIfPresent(String.self, forKey: .messageRole)
+        messageStale = try container.decodeIfPresent(Bool.self, forKey: .messageStale)
         fiveHourUsedPct = try container.decodeIfPresent(Double.self, forKey: .fiveHourUsedPct)
+        // Note: isRemote is handled below, outside the CodingKey-ordered block,
+        // because we need to read it from the payload with a default fallback.
         fiveHourResetsAt = try container.decodeIfPresent(Int.self, forKey: .fiveHourResetsAt)
         sevenDayUsedPct = try container.decodeIfPresent(Double.self, forKey: .sevenDayUsedPct)
         sevenDayResetsAt = try container.decodeIfPresent(Int.self, forKey: .sevenDayResetsAt)
-        isRemote = false  // Set by server after decoding
+        isRemote = try container.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
     }
 
     var sessionPhase: SessionPhase {
@@ -185,7 +201,7 @@ class HookSocketServer {
 
         serverSocket = socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverSocket >= 0 else {
-            logger.error("Failed to create socket: \(errno)")
+            logger.error("\(LogTS.now()) Failed to create socket: \(errno)")
             return
         }
 
@@ -209,7 +225,7 @@ class HookSocketServer {
         }
 
         guard bindResult == 0 else {
-            logger.error("Failed to bind socket: \(errno)")
+            logger.error("\(LogTS.now()) Failed to bind socket: \(errno)")
             close(serverSocket)
             serverSocket = -1
             return
@@ -218,13 +234,13 @@ class HookSocketServer {
         chmod(Self.socketPath, 0o777)
 
         guard listen(serverSocket, 10) == 0 else {
-            logger.error("Failed to listen: \(errno)")
+            logger.error("\(LogTS.now()) Failed to listen: \(errno)")
             close(serverSocket)
             serverSocket = -1
             return
         }
 
-        logger.info("Listening on \(Self.socketPath, privacy: .public)")
+        logger.info("\(LogTS.now()) Listening on \(Self.socketPath, privacy: .public)")
 
         acceptSource = DispatchSource.makeReadSource(fileDescriptor: serverSocket, queue: queue)
         acceptSource?.setEventHandler { [weak self] in
@@ -244,7 +260,7 @@ class HookSocketServer {
 
         tcpSocket = socket(AF_INET, SOCK_STREAM, 0)
         guard tcpSocket >= 0 else {
-            logger.error("Failed to create TCP socket: \(errno)")
+            logger.error("\(LogTS.now()) Failed to create TCP socket: \(errno)")
             return
         }
 
@@ -267,20 +283,20 @@ class HookSocketServer {
         }
 
         guard bindResult == 0 else {
-            logger.error("Failed to bind TCP socket on port \(Self.tcpPort): errno \(errno)")
+            logger.error("\(LogTS.now()) Failed to bind TCP socket on port \(Self.tcpPort): errno \(errno)")
             close(tcpSocket)
             tcpSocket = -1
             return
         }
 
         guard listen(tcpSocket, 10) == 0 else {
-            logger.error("Failed to listen on TCP socket: \(errno)")
+            logger.error("\(LogTS.now()) Failed to listen on TCP socket: \(errno)")
             close(tcpSocket)
             tcpSocket = -1
             return
         }
 
-        logger.info("Listening on TCP port \(Self.tcpPort)")
+        logger.info("\(LogTS.now()) Listening on TCP port \(Self.tcpPort)")
 
         writeLocalBridgePort()
 
@@ -310,10 +326,10 @@ class HookSocketServer {
         var nosigpipe: Int32 = 1
         setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
 
-        // Loopback connections come from our own Mac-local statusline via bridge_port=19876.
-        // Flag them as local so logs and state distinguish Mac from real remote hosts.
-        let isLoopback = peerAddr.sin_addr.s_addr == inet_addr("127.0.0.1")
-        handleClient(clientSocket, isRemote: !isLoopback)
+        // isRemote is carried in the JSON payload (see HookEvent.CodingKeys.isRemote).
+        // Peer IP cannot be used to infer remoteness because SSH reverse tunnels
+        // forward remote connections so they appear as 127.0.0.1 on the Mac side.
+        handleClient(clientSocket, isRemote: false)
     }
 
     /// Stop the socket server
@@ -345,9 +361,9 @@ class HookSocketServer {
         let contents = "\(Self.tcpPort)\n"
         do {
             try contents.write(to: portFile, atomically: true, encoding: .utf8)
-            logger.info("Wrote local bridge_port: \(Self.tcpPort)")
+            logger.info("\(LogTS.now()) Wrote local bridge_port: \(Self.tcpPort)")
         } catch {
-            logger.error("Failed to write local bridge_port: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to write local bridge_port: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -385,6 +401,15 @@ class HookSocketServer {
         return pendingPermissions.values.contains { $0.sessionId == sessionId }
     }
 
+    /// Check whether a specific toolUseId currently has a live pending-permission socket.
+    /// Used by `SessionStore.findNextPendingTool` to distinguish live waiters from zombie
+    /// chatItems whose PermissionRequest was never resolved (see ssh-bridge-bugs.md #7).
+    func isPermissionLive(toolUseId: String) -> Bool {
+        permissionsLock.lock()
+        defer { permissionsLock.unlock() }
+        return pendingPermissions[toolUseId] != nil
+    }
+
     /// Get the pending permission details for a session (if any)
     func getPendingPermission(sessionId: String) -> (toolName: String?, toolId: String?, toolInput: [String: AnyCodable]?)? {
         permissionsLock.lock()
@@ -405,12 +430,15 @@ class HookSocketServer {
     private func cleanupSpecificPermission(toolUseId: String) {
         permissionsLock.lock()
         guard let pending = pendingPermissions.removeValue(forKey: toolUseId) else {
+            let keys = pendingPermissions.keys.map { String($0.prefix(16)) }.joined(separator: ",")
             permissionsLock.unlock()
+            logger.debug("\(LogTS.now()) cancelPendingPermission: no match for toolUseId=\(toolUseId, privacy: .public) currentKeys=[\(keys, privacy: .public)]")
             return
         }
+        let remaining = pendingPermissions.count
         permissionsLock.unlock()
 
-        logger.debug("Tool completed externally, closing socket for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("\(LogTS.now()) Tool completed externally, closing socket for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId, privacy: .public) remainingPending=\(remaining)")
         close(pending.clientSocket)
     }
 
@@ -418,7 +446,7 @@ class HookSocketServer {
         permissionsLock.lock()
         let matching = pendingPermissions.filter { $0.value.sessionId == sessionId }
         for (toolUseId, pending) in matching {
-            logger.debug("Cleaning up stale permission for \(sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("\(LogTS.now()) Cleaning up stale permission for \(sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
             close(pending.clientSocket)
             pendingPermissions.removeValue(forKey: toolUseId)
         }
@@ -460,7 +488,7 @@ class HookSocketServer {
         toolUseIdCache[key]?.append(toolUseId)
         cacheLock.unlock()
 
-        logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("\(LogTS.now()) Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
     }
 
     /// Pop and return cached tool_use_id for PermissionRequest (FIFO)
@@ -482,7 +510,7 @@ class HookSocketServer {
             toolUseIdCache[key] = queue
         }
 
-        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("\(LogTS.now()) Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
         return toolUseId
     }
 
@@ -496,7 +524,7 @@ class HookSocketServer {
         cacheLock.unlock()
 
         if !keysToRemove.isEmpty {
-            logger.debug("Cleaned up \(keysToRemove.count) cache entries for session \(sessionId.prefix(8), privacy: .public)")
+            logger.debug("\(LogTS.now()) Cleaned up \(keysToRemove.count) cache entries for session \(sessionId.prefix(8), privacy: .public)")
         }
     }
 
@@ -550,14 +578,17 @@ class HookSocketServer {
 
         let data = allData
 
-        guard var event = try? JSONDecoder().decode(HookEvent.self, from: data) else {
-            logger.warning("Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
+        guard let event = try? JSONDecoder().decode(HookEvent.self, from: data) else {
+            logger.warning("\(LogTS.now()) Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
             close(clientSocket)
             return
         }
-        event.isRemote = isRemote
+        // event.isRemote is populated from the JSON payload by the decoder.
+        // The `isRemote` parameter to handleClient is retained for compatibility
+        // but no longer used — see acceptTCPConnection for rationale.
+        _ = isRemote
 
-        logger.debug("Received\(isRemote ? " (remote)" : ""): \(event.event, privacy: .public) for \(event.sessionId.prefix(8), privacy: .public)")
+        logger.debug("\(LogTS.now()) Received\(event.isRemote ? " (remote)" : ""): \(event.event, privacy: .public) for \(event.sessionId.prefix(8), privacy: .public)")
 
         if event.event == "PreToolUse" {
             cacheToolUseId(event: event)
@@ -574,13 +605,13 @@ class HookSocketServer {
             } else if let cachedToolUseId = popCachedToolUseId(event: event) {
                 toolUseId = cachedToolUseId
             } else {
-                logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - no cache hit")
+                logger.warning("\(LogTS.now()) Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - no cache hit")
                 close(clientSocket)
                 eventHandler?(event)
                 return
             }
 
-            logger.debug("Permission request - keeping socket open for \(event.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("\(LogTS.now()) Permission request - keeping socket open for \(event.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
 
             let updatedEvent = HookEvent(
                 sessionId: event.sessionId,
@@ -594,6 +625,8 @@ class HookSocketServer {
                 toolUseId: toolUseId,  // Use resolved toolUseId
                 notificationType: event.notificationType,
                 message: event.message,
+                messageRole: event.messageRole,
+                messageStale: event.messageStale,
                 isRemote: event.isRemote
             )
 
@@ -606,7 +639,9 @@ class HookSocketServer {
             )
             permissionsLock.lock()
             pendingPermissions[toolUseId] = pending
+            let pendingCount = pendingPermissions.count
             permissionsLock.unlock()
+            logger.debug("\(LogTS.now()) PendingPermission stored key=\(toolUseId, privacy: .public) session=\(event.sessionId.prefix(8), privacy: .public) pendingCount=\(pendingCount)")
 
             eventHandler?(updatedEvent)
             return
@@ -614,6 +649,9 @@ class HookSocketServer {
             close(clientSocket)
         }
 
+        if event.event == "PostToolUse" {
+            logger.debug("\(LogTS.now()) PostToolUse event.toolUseId=\(event.toolUseId ?? "nil", privacy: .public) tool=\(event.tool ?? "?", privacy: .public) session=\(event.sessionId.prefix(8), privacy: .public)")
+        }
         eventHandler?(event)
     }
 
@@ -621,7 +659,7 @@ class HookSocketServer {
         permissionsLock.lock()
         guard let pending = pendingPermissions.removeValue(forKey: toolUseId) else {
             permissionsLock.unlock()
-            logger.debug("No pending permission for toolUseId: \(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("\(LogTS.now()) No pending permission for toolUseId: \(toolUseId.prefix(12), privacy: .public)")
             return
         }
         permissionsLock.unlock()
@@ -633,18 +671,18 @@ class HookSocketServer {
         }
 
         let age = Date().timeIntervalSince(pending.receivedAt)
-        logger.info("Sending response: \(decision, privacy: .public) for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
+        logger.info("\(LogTS.now()) Sending response: \(decision, privacy: .public) for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
 
         data.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else {
-                logger.error("Failed to get data buffer address")
+                logger.error("\(LogTS.now()) Failed to get data buffer address")
                 return
             }
             let result = write(pending.clientSocket, baseAddress, data.count)
             if result < 0 {
-                logger.error("Write failed with errno: \(errno)")
+                logger.error("\(LogTS.now()) Write failed with errno: \(errno)")
             } else {
-                logger.debug("Write succeeded: \(result) bytes")
+                logger.debug("\(LogTS.now()) Write succeeded: \(result) bytes")
             }
         }
 
@@ -660,7 +698,7 @@ class HookSocketServer {
 
         guard let pending = matchingPending else {
             permissionsLock.unlock()
-            logger.debug("No pending permission for session: \(sessionId.prefix(8), privacy: .public)")
+            logger.debug("\(LogTS.now()) No pending permission for session: \(sessionId.prefix(8), privacy: .public)")
             return
         }
 
@@ -675,19 +713,19 @@ class HookSocketServer {
         }
 
         let age = Date().timeIntervalSince(pending.receivedAt)
-        logger.info("Sending response: \(decision, privacy: .public) for \(sessionId.prefix(8), privacy: .public) tool:\(pending.toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
+        logger.info("\(LogTS.now()) Sending response: \(decision, privacy: .public) for \(sessionId.prefix(8), privacy: .public) tool:\(pending.toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
 
         var writeSuccess = false
         data.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else {
-                logger.error("Failed to get data buffer address")
+                logger.error("\(LogTS.now()) Failed to get data buffer address")
                 return
             }
             let result = write(pending.clientSocket, baseAddress, data.count)
             if result < 0 {
-                logger.error("Write failed with errno: \(errno)")
+                logger.error("\(LogTS.now()) Write failed with errno: \(errno)")
             } else {
-                logger.debug("Write succeeded: \(result) bytes")
+                logger.debug("\(LogTS.now()) Write succeeded: \(result) bytes")
                 writeSuccess = true
             }
         }

@@ -21,7 +21,7 @@ class WindowManager {
         screenSelector.refreshScreens()
 
         guard let screen = screenSelector.selectedScreen else {
-            logger.warning("No screen found")
+            logger.warning("\(LogTS.now()) No screen found")
             return nil
         }
 

@@ -129,6 +129,7 @@ struct InstanceRow: View {
     @State private var isHovered = false
     @State private var spinnerPhase = 0
     @State private var isYabaiAvailable = false
+    @State private var isDetailExpanded = true
 
     private let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
     private let spinnerSymbols = ["·", "✢", "✳", "∗", "✻", "✽"]
@@ -146,6 +147,39 @@ struct InstanceRow: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            rowHStack
+            if let permission = session.activePermission,
+               !isInteractiveTool,
+               isDetailExpanded {
+                PermissionDetailView(context: permission)
+                    .padding(.leading, 24)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            onChat()
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isWaitingForApproval)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDetailExpanded)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
+        )
+        .onHover { isHovered = $0 }
+        .onChange(of: isWaitingForApproval) { _, waiting in
+            isDetailExpanded = waiting
+        }
+        .task {
+            isYabaiAvailable = await WindowFinder.shared.isYabaiAvailable()
+        }
+    }
+
+    private var rowHStack: some View {
         HStack(alignment: .center, spacing: 10) {
             // State indicator on left
             stateIndicator
@@ -245,6 +279,8 @@ struct InstanceRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             } else if isWaitingForApproval {
                 InlineApprovalButtons(
+                    isDetailExpanded: isDetailExpanded,
+                    onToggleDetail: { isDetailExpanded.toggle() },
                     onChat: onChat,
                     onApprove: onApprove,
                     onReject: onReject
@@ -273,22 +309,6 @@ struct InstanceRow: View {
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 14)
-        .padding(.vertical, 10)
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            onChat()
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isWaitingForApproval)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
-        )
-        .onHover { isHovered = $0 }
-        .task {
-            isYabaiAvailable = await WindowFinder.shared.isYabaiAvailable()
         }
     }
 
@@ -326,16 +346,26 @@ struct InstanceRow: View {
 
 /// Compact inline approval buttons with staggered animation
 struct InlineApprovalButtons: View {
+    let isDetailExpanded: Bool
+    let onToggleDetail: () -> Void
     let onChat: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
 
+    @State private var showToggleButton = false
     @State private var showChatButton = false
     @State private var showDenyButton = false
     @State private var showAllowButton = false
 
     var body: some View {
         HStack(spacing: 6) {
+            // Detail expand/collapse toggle
+            IconButton(icon: isDetailExpanded ? "chevron.up" : "chevron.down") {
+                onToggleDetail()
+            }
+            .opacity(showToggleButton ? 1 : 0)
+            .scaleEffect(showToggleButton ? 1 : 0.8)
+
             // Chat button
             IconButton(icon: "bubble.left") {
                 onChat()
@@ -375,12 +405,15 @@ struct InlineApprovalButtons: View {
         }
         .onAppear {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.0)) {
-                showChatButton = true
+                showToggleButton = true
             }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
-                showDenyButton = true
+                showChatButton = true
             }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.1)) {
+                showDenyButton = true
+            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.15)) {
                 showAllowButton = true
             }
         }

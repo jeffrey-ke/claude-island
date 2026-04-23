@@ -98,7 +98,7 @@ actor ProcessExecutor: ProcessExecuting {
                 if process.terminationStatus == 0 {
                     continuation.resume(returning: .success(result))
                 } else {
-                    Self.logger.warning("Command failed: \(executable) \(arguments.joined(separator: " "), privacy: .public) - exit code \(process.terminationStatus)")
+                    Self.logger.warning("\(LogTS.now()) Command failed: \(executable) \(arguments.joined(separator: " "), privacy: .public) - exit code \(process.terminationStatus)")
                     continuation.resume(returning: .failure(.executionFailed(
                         command: executable,
                         exitCode: process.terminationStatus,
@@ -107,14 +107,14 @@ actor ProcessExecutor: ProcessExecuting {
                 }
             } catch let error as NSError {
                 if error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
-                    Self.logger.error("Command not found: \(executable, privacy: .public)")
+                    Self.logger.error("\(LogTS.now()) Command not found: \(executable, privacy: .public)")
                     continuation.resume(returning: .failure(.commandNotFound(executable)))
                 } else {
-                    Self.logger.error("Failed to launch command: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
+                    Self.logger.error("\(LogTS.now()) Failed to launch command: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
                     continuation.resume(returning: .failure(.launchFailed(command: executable, underlying: error)))
                 }
             } catch {
-                Self.logger.error("Failed to launch command: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("\(LogTS.now()) Failed to launch command: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
                 continuation.resume(returning: .failure(.launchFailed(command: executable, underlying: error)))
             }
         }
@@ -144,7 +144,7 @@ actor ProcessExecutor: ProcessExecuting {
             if process.terminationStatus == 0 {
                 return .success(stdout)
             } else {
-                Self.logger.warning("Sync command failed: \(executable, privacy: .public) - exit code \(process.terminationStatus)")
+                Self.logger.warning("\(LogTS.now()) Sync command failed: \(executable, privacy: .public) - exit code \(process.terminationStatus)")
                 return .failure(.executionFailed(
                     command: executable,
                     exitCode: process.terminationStatus,
@@ -153,14 +153,14 @@ actor ProcessExecutor: ProcessExecuting {
             }
         } catch let error as NSError {
             if error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
-                Self.logger.error("Command not found: \(executable, privacy: .public)")
+                Self.logger.error("\(LogTS.now()) Command not found: \(executable, privacy: .public)")
                 return .failure(.commandNotFound(executable))
             } else {
-                Self.logger.error("Sync command launch failed: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("\(LogTS.now()) Sync command launch failed: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
                 return .failure(.launchFailed(command: executable, underlying: error))
             }
         } catch {
-            Self.logger.error("Sync command launch failed: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("\(LogTS.now()) Sync command launch failed: \(executable, privacy: .public) - \(error.localizedDescription, privacy: .public)")
             return .failure(.launchFailed(command: executable, underlying: error))
         }
     }

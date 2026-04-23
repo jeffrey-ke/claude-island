@@ -41,6 +41,7 @@ class JSONLInterruptWatcher {
         self.sessionId = sessionId
         let projectDir = cwd.replacingOccurrences(of: "/", with: "-")
                             .replacingOccurrences(of: ".", with: "-")
+                            .replacingOccurrences(of: "_", with: "-")
         self.filePath = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/" + sessionId + ".jsonl"
     }
 
@@ -56,7 +57,7 @@ class JSONLInterruptWatcher {
 
         guard FileManager.default.fileExists(atPath: filePath),
               let handle = FileHandle(forReadingAtPath: filePath) else {
-            logger.warning("Failed to open file: \(self.filePath, privacy: .public)")
+            logger.warning("\(LogTS.now()) Failed to open file: \(self.filePath, privacy: .public)")
             return
         }
 
@@ -65,7 +66,7 @@ class JSONLInterruptWatcher {
         do {
             lastOffset = try handle.seekToEnd()
         } catch {
-            logger.error("Failed to seek to end: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to seek to end: \(error.localizedDescription, privacy: .public)")
             return
         }
 
@@ -88,7 +89,7 @@ class JSONLInterruptWatcher {
         source = newSource
         newSource.resume()
 
-        logger.debug("Started watching: \(self.sessionId.prefix(8), privacy: .public)...")
+        logger.debug("\(LogTS.now()) Started watching: \(self.sessionId.prefix(8), privacy: .public)...")
     }
 
     private func checkForInterrupt() {
@@ -119,7 +120,7 @@ class JSONLInterruptWatcher {
         let lines = newContent.components(separatedBy: "\n")
         for line in lines where !line.isEmpty {
             if isInterruptLine(line) {
-                logger.info("Detected interrupt in session: \(self.sessionId.prefix(8), privacy: .public)")
+                logger.info("\(LogTS.now()) Detected interrupt in session: \(self.sessionId.prefix(8), privacy: .public)")
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     self.delegate?.didDetectInterrupt(sessionId: self.sessionId)
@@ -161,7 +162,7 @@ class JSONLInterruptWatcher {
 
     private func stopInternal() {
         if source != nil {
-            logger.debug("Stopped watching: \(self.sessionId.prefix(8), privacy: .public)...")
+            logger.debug("\(LogTS.now()) Stopped watching: \(self.sessionId.prefix(8), privacy: .public)...")
         }
         source?.cancel()
         source = nil

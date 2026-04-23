@@ -37,7 +37,7 @@ actor FileSyncScheduler {
             try? await Task.sleep(nanoseconds: debounceNs)
             guard !Task.isCancelled else { return }
 
-            Self.logger.debug("Executing sync for session \(sessionId.prefix(8), privacy: .public)")
+            Self.logger.debug("\(LogTS.now()) Executing sync for session \(sessionId.prefix(8), privacy: .public)")
             await handler(sessionId, cwd)
         }
     }
@@ -46,7 +46,7 @@ actor FileSyncScheduler {
     func cancel(sessionId: String) {
         if let existing = pendingSyncs.removeValue(forKey: sessionId) {
             existing.cancel()
-            Self.logger.debug("Cancelled pending sync for session \(sessionId.prefix(8), privacy: .public)")
+            Self.logger.debug("\(LogTS.now()) Cancelled pending sync for session \(sessionId.prefix(8), privacy: .public)")
         }
     }
 

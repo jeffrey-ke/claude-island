@@ -42,6 +42,9 @@ class ChatHistoryManager: ObservableObject {
     }
 
     func syncFromFile(sessionId: String, cwd: String) async {
+        // Remote sessions have no Mac-local JSONL; chat comes from the hook bridge.
+        if await SessionStore.shared.isRemote(sessionId: sessionId) { return }
+
         let messages = await ConversationParser.shared.parseFullConversation(
             sessionId: sessionId,
             cwd: cwd
@@ -106,9 +109,11 @@ struct ChatHistoryItem: Identifiable, Equatable, Sendable {
     let id: String
     let type: ChatHistoryItemType
     let timestamp: Date
+    /// Set by the Stop-hook flush-timeout path: the text is a placeholder, not a real reply.
+    var isStale: Bool = false
 
     static func == (lhs: ChatHistoryItem, rhs: ChatHistoryItem) -> Bool {
-        lhs.id == rhs.id && lhs.type == rhs.type
+        lhs.id == rhs.id && lhs.type == rhs.type && lhs.isStale == rhs.isStale
     }
 }
 

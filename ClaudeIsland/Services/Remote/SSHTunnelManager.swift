@@ -42,7 +42,7 @@ class SSHTunnelManager: ObservableObject {
 
         currentHost = host
         state = .connecting
-        logger.info("Connecting tunnel to \(host, privacy: .public)")
+        logger.info("\(LogTS.now()) Connecting tunnel to \(host, privacy: .public)")
 
         // Kill any stale tunnel processes from previous app runs
         killStaleTunnels()
@@ -54,7 +54,7 @@ class SSHTunnelManager: ObservableObject {
         disconnectInternal()
         state = .disconnected
         currentHost = ""
-        logger.info("Tunnel disconnected")
+        logger.info("\(LogTS.now()) Tunnel disconnected")
     }
 
     // MARK: - Private
@@ -149,7 +149,7 @@ class SSHTunnelManager: ObservableObject {
                 self.sshProcess = nil
 
                 if self.state == .connected || self.state == .connecting {
-                    logger.warning("Tunnel to \(host, privacy: .public) exited with code \(proc.terminationStatus)")
+                    logger.warning("\(LogTS.now()) Tunnel to \(host, privacy: .public) exited with code \(proc.terminationStatus)")
                     self.scheduleReconnect(host: host)
                 }
             }
@@ -158,7 +158,7 @@ class SSHTunnelManager: ObservableObject {
         do {
             try process.run()
             sshProcess = process
-            logger.info("SSH process launched (pid \(process.processIdentifier))")
+            logger.info("\(LogTS.now()) SSH process launched (pid \(process.processIdentifier))")
 
             // Check if tunnel is up after a short delay
             connectCheckTask = Task { [weak self] in
@@ -168,7 +168,7 @@ class SSHTunnelManager: ObservableObject {
 
                 if let proc = self.sshProcess, proc.isRunning {
                     self.state = .connected
-                    logger.info("Tunnel to \(host, privacy: .public) connected")
+                    logger.info("\(LogTS.now()) Tunnel to \(host, privacy: .public) connected")
 
                     // Write bridge_port file on remote
                     await self.writeBridgePort(host: host)
@@ -178,7 +178,7 @@ class SSHTunnelManager: ObservableObject {
                 }
             }
         } catch {
-            logger.error("Failed to launch SSH: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to launch SSH: \(error.localizedDescription, privacy: .public)")
             scheduleReconnect(host: host)
         }
     }
@@ -194,9 +194,9 @@ class SSHTunnelManager: ObservableObject {
         )
         switch result {
         case .success:
-            logger.info("Wrote bridge_port on \(host, privacy: .public)")
+            logger.info("\(LogTS.now()) Wrote bridge_port on \(host, privacy: .public)")
         case .failure(let error):
-            logger.error("Failed to write bridge_port: \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to write bridge_port: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -205,7 +205,7 @@ class SSHTunnelManager: ObservableObject {
         reconnectTask?.cancel()
 
         reconnectTask = Task { [weak self] in
-            logger.info("Reconnecting to \(host, privacy: .public) in 5 seconds...")
+            logger.info("\(LogTS.now()) Reconnecting to \(host, privacy: .public) in 5 seconds...")
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
             guard let self = self else { return }

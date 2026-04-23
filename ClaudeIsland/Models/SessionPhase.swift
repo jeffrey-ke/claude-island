@@ -37,6 +37,46 @@ struct PermissionContext: Sendable {
         }
         return parts.joined(separator: "\n")
     }
+
+    /// AnyCodable-unwrapped toolInput as strings. Same pattern as
+    /// ToolEventProcessor.extractToolInput, extended to handle Double
+    /// and arrays so the detail view doesn't render "...".
+    var toolInputStrings: [String: String] {
+        guard let input = toolInput else { return [:] }
+        var out: [String: String] = [:]
+        for (key, value) in input {
+            out[key] = Self.stringify(value.value)
+        }
+        return out
+    }
+
+    /// Untruncated (label, value) pairs sorted so the decision-relevant
+    /// fields (command, file_path, url, pattern, query) come first.
+    var fullInput: [(label: String, value: String)] {
+        toolInputStrings
+            .map { (label: $0.key, value: $0.value) }
+            .sorted { Self.fieldPriority($0.label) < Self.fieldPriority($1.label) }
+    }
+
+    private static func fieldPriority(_ field: String) -> Int {
+        switch field {
+        case "command", "file_path", "path", "url", "pattern", "query": return 0
+        case "description", "old_string", "new_string", "content": return 1
+        default: return 2
+        }
+    }
+
+    private static func stringify(_ v: Any) -> String {
+        switch v {
+        case let s as String: return s
+        case let n as Int: return String(n)
+        case let n as Double: return String(n)
+        case let b as Bool: return b ? "true" : "false"
+        case let arr as [Any]:
+            return "[" + arr.map(stringify).joined(separator: ", ") + "]"
+        default: return String(describing: v)
+        }
+    }
 }
 
 extension PermissionContext: Equatable {

@@ -74,6 +74,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = FD33FD682EDF32D8002A6548 /* Build configuration list for PBXNativeTarget "ClaudeIsland" */;
 			buildPhases = (
+				FDA11C0A2EDF32D7002A6548 /* Sync hooks from repo */,
 				FD33FD592EDF32D7002A6548 /* Sources */,
 				FD33FD5A2EDF32D7002A6548 /* Frameworks */,
 				FD33FD5B2EDF32D7002A6548 /* Resources */,
@@ -143,6 +144,33 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		FDA11C0A2EDF32D7002A6548 /* Sync hooks from repo */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../hooks/ccbridge-hook.py",
+				"$(SRCROOT)/../hooks/bridge_send.py",
+				"$(SRCROOT)/../hooks/ccmonitor-statusline.py",
+			);
+			name = "Sync hooks from repo";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/ClaudeIsland/Resources/ccbridge-hook.py",
+				"$(SRCROOT)/ClaudeIsland/Resources/bridge_send.py",
+				"$(SRCROOT)/ClaudeIsland/Resources/ccmonitor-statusline.py",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\n# Copies hooks/*.py into the app bundle's Resources at build time so the\n# app always ships the tracked-in-git source, not a stale hand-copied duplicate.\ncp \"$SRCROOT/../hooks/ccbridge-hook.py\" \"$SRCROOT/ClaudeIsland/Resources/ccbridge-hook.py\"\ncp \"$SRCROOT/../hooks/bridge_send.py\" \"$SRCROOT/ClaudeIsland/Resources/bridge_send.py\"\ncp \"$SRCROOT/../hooks/ccmonitor-statusline.py\" \"$SRCROOT/ClaudeIsland/Resources/ccmonitor-statusline.py\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		FD33FD592EDF32D7002A6548 /* Sources */ = {

@@ -42,7 +42,7 @@ enum ToolEventProcessor {
                 timestamp: Date()
             )
             session.chatItems.append(placeholderItem)
-            logger.debug("Created placeholder tool entry for \(toolUseId.prefix(16), privacy: .public)")
+            logger.debug("\(LogTS.now()) Created placeholder tool entry for \(toolUseId.prefix(16), privacy: .public)")
         }
     }
 
@@ -68,9 +68,9 @@ enum ToolEventProcessor {
 
         if event.tool == "Task" {
             session.subagentState.startTask(taskToolId: toolUseId)
-            logger.debug("Started Task subagent tracking: \(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("\(LogTS.now()) Started Task subagent tracking: \(toolUseId.prefix(12), privacy: .public)")
         } else if let toolName = event.tool, session.subagentState.hasActiveSubagent {
-            logger.debug("Adding subagent tool \(toolName, privacy: .public) to active Task")
+            logger.debug("\(LogTS.now()) Adding subagent tool \(toolName, privacy: .public) to active Task")
             let input = extractToolInput(from: event.toolInput)
             let subagentTool = SubagentToolCall(
                 id: toolUseId,
@@ -92,14 +92,14 @@ enum ToolEventProcessor {
 
         if event.tool == "Task" {
             if let taskContext = session.subagentState.activeTasks[toolUseId] {
-                logger.debug("Task completing with \(taskContext.subagentTools.count) subagent tools")
+                logger.debug("\(LogTS.now()) Task completing with \(taskContext.subagentTools.count) subagent tools")
                 attachSubagentToolsToTask(
                     session: &session,
                     taskToolId: toolUseId,
                     subagentTools: taskContext.subagentTools
                 )
             } else {
-                logger.debug("Task completing but no taskContext found for \(toolUseId.prefix(12), privacy: .public)")
+                logger.debug("\(LogTS.now()) Task completing but no taskContext found for \(toolUseId.prefix(12), privacy: .public)")
             }
             session.subagentState.stopTask(taskToolId: toolUseId)
         } else {
@@ -149,7 +149,7 @@ enum ToolEventProcessor {
             }
         }
         let count = session.chatItems.count
-        logger.warning("Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
+        logger.warning("\(LogTS.now()) Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
     }
 
     /// Find the next tool waiting for approval
@@ -200,7 +200,7 @@ enum ToolEventProcessor {
                     type: .toolCall(tool),
                     timestamp: session.chatItems[i].timestamp
                 )
-                logger.debug("Attached \(subagentTools.count) subagent tools to Task \(taskToolId.prefix(12), privacy: .public)")
+                logger.debug("\(LogTS.now()) Attached \(subagentTools.count) subagent tools to Task \(taskToolId.prefix(12), privacy: .public)")
                 break
             }
         }

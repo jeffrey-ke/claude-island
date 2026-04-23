@@ -36,14 +36,14 @@ actor RemoteTmuxController {
         do {
             if let rawKey = rawKey {
                 // Send a raw key name (e.g. Escape)
-                logger.debug("Sending \(rawKey) to \(host, privacy: .public) \(targetStr, privacy: .public)")
+                logger.debug("\(LogTS.now()) Sending \(rawKey) to \(host, privacy: .public) \(targetStr, privacy: .public)")
                 _ = try await ProcessExecutor.shared.run(
                     "/usr/bin/ssh",
                     arguments: [host, "tmux", "send-keys", "-t", targetStr, rawKey]
                 )
             } else if !keys.isEmpty {
                 // Send literal text
-                logger.debug("Sending text to \(host, privacy: .public) \(targetStr, privacy: .public)")
+                logger.debug("\(LogTS.now()) Sending text to \(host, privacy: .public) \(targetStr, privacy: .public)")
                 _ = try await ProcessExecutor.shared.run(
                     "/usr/bin/ssh",
                     arguments: [host, "tmux", "send-keys", "-t", targetStr, "-l", keys]
@@ -59,7 +59,7 @@ actor RemoteTmuxController {
 
             return true
         } catch {
-            logger.error("Failed to send keys to \(host, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            logger.error("\(LogTS.now()) Failed to send keys to \(host, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
     }

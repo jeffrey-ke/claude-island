@@ -568,7 +568,7 @@ struct MessageItemView: View {
         case .user(let text):
             UserMessageView(text: text)
         case .assistant(let text):
-            AssistantMessageView(text: text)
+            AssistantMessageView(text: text, isStale: item.isStale)
         case .toolCall(let tool):
             ToolCallView(tool: tool, sessionId: sessionId)
         case .thinking(let text):
@@ -603,16 +603,22 @@ struct UserMessageView: View {
 
 struct AssistantMessageView: View {
     let text: String
+    var isStale: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
-            // White dot indicator
             Circle()
-                .fill(Color.white.opacity(0.6))
+                .fill(Color.white.opacity(isStale ? 0.3 : 0.6))
                 .frame(width: 6, height: 6)
                 .padding(.top, 5)
 
-            MarkdownText(text, color: .white.opacity(0.9), fontSize: 13)
+            if isStale {
+                Text(text)
+                    .font(.system(size: 12).italic())
+                    .foregroundColor(.white.opacity(0.5))
+            } else {
+                MarkdownText(text, color: .white.opacity(0.9), fontSize: 13)
+            }
 
             Spacer(minLength: 60)
         }
